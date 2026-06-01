@@ -1,459 +1,565 @@
-/* ============================================================
-   App: Học từ vựng tiếng Anh - Claude Builder
-   Dữ liệu: window.VOCAB_DATA (load từ vocabulary.js)
-   Lưu tiến độ: localStorage key 'claude-vocab-progress-v1'
-   ============================================================ */
+// Học Tiếng Anh — Flashcard Lớp 1–5 — app logic
+// Globals from data.js: window.data = { days: [{ id, level, theme, themeEn, cards: [...] }] }
+// Mỗi card: { emoji, word, ipa, meaning }
 
-const STORAGE_KEY = 'claude-vocab-progress-v1';
-const DATA = window.VOCAB_DATA;
-const WORDS = DATA.words;
-const TOPICS = DATA.topics;
-const TOPICS_BY_ID = Object.fromEntries(TOPICS.map(t => [t.id, t]));
-const WORDS_BY_ID = Object.fromEntries(WORDS.map(w => [w.id, w]));
+(function () {
+  const STORAGE_KEY = "htt-en:flashcard:state";
 
-/* ------------------ State ------------------ */
-function defaultState() {
-  return {
-    perDay: 7,
-    lastStudyDate: null,
-    streak: 0,
-    words: {} // id -> { box, nextReview, reps, mastered }
+  const defaultState = {
+    currentDay: 1,
+    currentCardIndex: 0,
+    ratings: {}, // key: `${dayId}-${cardIdx}` → "easy" | "medium" | "hard"
   };
-}
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultState();
-    return { ...defaultState(), ...JSON.parse(raw) };
-  } catch (e) {
-    return defaultState();
-  }
-}
-
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-let state = loadState();
-
-/* ------------------ Date helpers ------------------ */
-function todayStr() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
-}
-function addDaysStr(days) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-function daysBetween(a, b) {
-  const da = new Date(a + 'T00:00:00');
-  const db = new Date(b + 'T00:00:00');
-  return Math.round((db - da) / 86400000);
-}
-
-/* ------------------ SRS (Leitner) ------------------ */
-function reviewIntervalDays(box) {
-  // box 1 -> 1 day, box 2 -> 2, box 3 -> 4, box 4 -> 8, box 5 -> 16
-  return Math.max(1, Math.pow(2, box - 1));
-}
-
-function rateWord(wordId, rate) {
-  const cur = state.words[wordId] || { box: 1, reps: 0, mastered: false };
-  let newBox = cur.box;
-  if (rate === 'hard') {
-    newBox = Math.max(1, cur.box); // stay
-  } else if (rate === 'normal') {
-    newBox = cur.box + 1;
-  } else if (rate === 'easy') {
-    newBox = cur.box + 2;
-  }
-  newBox = Math.min(6, newBox);
-  const mastered = newBox >= 5 && rate === 'easy' ? true : (cur.mastered || newBox >= 6);
-  const interval = rate === 'hard' ? 1 : reviewIntervalDays(newBox);
-  state.words[wordId] = {
-    box: newBox,
-    reps: cur.reps + 1,
-    nextReview: addDaysStr(interval),
-    mastered: mastered
-  };
-  updateStreakOnStudy();
-  saveState();
-}
-
-function updateStreakOnStudy() {
-  const today = todayStr();
-  if (state.lastStudyDate === today) return;
-  if (state.lastStudyDate && daysBetween(state.lastStudyDate, today) === 1) {
-    state.streak = (state.streak || 0) + 1;
-  } else {
-    state.streak = 1;
-  }
-  state.lastStudyDate = today;
-}
-
-/* ------------------ Today's session ------------------ */
-function buildTodaySession() {
-  const today = todayStr();
-  const due = [];
-  const newWords = [];
-
-  for (const w of WORDS) {
-    const p = state.words[w.id];
-    if (!p) {
-      newWords.push(w);
-    } else if (!p.mastered && p.nextReview && p.nextReview <= today) {
-      due.push(w);
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return { ...defaultState };
+      const parsed = JSON.parse(raw);
+      return { ...defaultState, ...parsed };
+    } catch {
+      return { ...defaultState };
     }
   }
 
-  // sort due by earliest nextReview, newWords stay in JSON order
-  due.sort((a, b) => {
-    const pa = state.words[a.id].nextReview;
-    const pb = state.words[b.id].nextReview;
-    return pa < pb ? -1 : pa > pb ? 1 : 0;
-  });
-
-  const perDay = state.perDay;
-  let session;
-  if (due.length >= perDay) {
-    session = due.slice(0, perDay);
-  } else {
-    session = due.concat(newWords.slice(0, perDay - due.length));
+  function saveState() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
   }
-  return session;
-}
 
-/* ------------------ TTS ------------------ */
-let _voices = [];
-function loadVoices() {
-  _voices = speechSynthesis.getVoices();
-}
-if (typeof speechSynthesis !== 'undefined') {
-  loadVoices();
-  speechSynthesis.onvoiceschanged = loadVoices;
-}
+  const state = loadState();
 
-function speak(text) {
-  if (!('speechSynthesis' in window)) return;
-  try {
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'en-US';
-    u.rate = 0.9;
-    u.pitch = 1;
-    const enVoice = _voices.find(v => v.lang && v.lang.startsWith('en'));
-    if (enVoice) u.voice = enVoice;
-    speechSynthesis.speak(u);
-  } catch (e) {
-    console.warn('TTS failed', e);
+  // ---------- DOM ----------
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    statEasy: $("stat-easy"),
+    statMedium: $("stat-medium"),
+    statHard: $("stat-hard"),
+    dayLabel: $("day-label"),
+    dayThemeEn: $("day-theme-en"),
+    dayThemeVi: $("day-theme-vi"),
+    topicName: $("topic-name"),
+    cardProgress: $("card-progress"),
+    dayPrev: $("day-prev"),
+    dayNext: $("day-next"),
+    openPicker: $("open-picker"),
+    flashcard: $("flashcard"),
+    frontWord: $("front-word"),
+    frontIpa: $("front-ipa"),
+    backEmoji: $("back-emoji"),
+    backMeaning: $("back-meaning"),
+    cardPrev: $("card-prev"),
+    cardNext: $("card-next"),
+    emptyState: $("empty-state"),
+    picker: $("picker"),
+    pickerOverlay: $("picker-overlay"),
+    pickerClose: $("picker-close"),
+    pickerGrid: $("picker-grid"),
+  };
+
+  // ---------- Helpers ----------
+  function currentDayData() {
+    return data.days[state.currentDay - 1];
   }
-}
+  function currentCard() {
+    const d = currentDayData();
+    if (!d || !d.cards.length) return null;
+    return d.cards[state.currentCardIndex] || null;
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
 
-/* ------------------ DOM refs ------------------ */
-const $ = (id) => document.getElementById(id);
+  // ---------- Speech ----------
+  function speak(text) {
+    if (!("speechSynthesis" in window) || !text) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.lang = "en-US";
+      utt.rate = 0.85;
+      utt.pitch = 1;
+      window.speechSynthesis.speak(utt);
+    } catch {}
+  }
 
-const els = {
-  tabs: document.querySelectorAll('.tab'),
-  views: {
-    today: $('view-today'),
-    topics: $('view-topics'),
-    progress: $('view-progress')
-  },
-  // Today
-  todayBar: $('todayBar'),
-  todayCount: $('todayCount'),
-  todayTotal: $('todayTotal'),
-  cardArea: $('cardArea'),
-  flashcard: $('flashcard'),
-  cardTopic: $('cardTopic'),
-  cardWord: $('cardWord'),
-  cardIpa: $('cardIpa'),
-  cardPos: $('cardPos'),
-  cardEveryday: $('cardEveryday'),
-  cardAi: $('cardAi'),
-  cardExampleEn: $('cardExampleEn'),
-  cardExampleVi: $('cardExampleVi'),
-  cardTip: $('cardTip'),
-  btnSpeak: $('btnSpeak'),
-  btnFlip: $('btnFlip'),
-  rateButtons: $('rateButtons'),
-  doneArea: $('doneArea'),
-  doneStat: $('doneStat'),
-  perDay: $('perDay'),
-  // Topics
-  topicGrid: $('topicGrid'),
-  topicDetail: $('topicDetail'),
-  topicDetailTitle: $('topicDetailTitle'),
-  topicWordList: $('topicWordList'),
-  wordDetail: $('wordDetail'),
-  wordDetailContent: $('wordDetailContent'),
-  btnBackTopics: $('btnBackTopics'),
-  btnBackWordList: $('btnBackWordList'),
-  // Progress
-  statLearned: $('statLearned'),
-  statMastered: $('statMastered'),
-  statStreak: $('statStreak'),
-  statTotal: $('statTotal'),
-  topicProgressList: $('topicProgressList'),
-  btnReset: $('btnReset')
-};
+  // ---------- IndexedDB (recordings) ----------
+  const DB_NAME = "htt-en-rec-flashcard";
+  const DB_VERSION = 1;
+  const DB_STORE = "recordings";
+  let _dbPromise = null;
 
-/* ------------------ Tab switching ------------------ */
-els.tabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    const view = tab.dataset.view;
-    els.tabs.forEach(t => t.classList.toggle('active', t === tab));
-    Object.entries(els.views).forEach(([k, el]) => {
-      el.classList.toggle('active', k === view);
+  function openRecDB() {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve, reject) => {
+      if (!("indexedDB" in window)) { reject(new Error("IndexedDB not supported")); return; }
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) {
+          db.createObjectStore(DB_STORE, { keyPath: "id" });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
     });
-    if (view === 'today') renderToday();
-    if (view === 'topics') renderTopicsGrid();
-    if (view === 'progress') renderProgress();
-  });
-});
-
-/* ------------------ Today view ------------------ */
-let session = [];
-let sessionIndex = 0;
-
-function renderToday() {
-  session = buildTodaySession();
-  sessionIndex = 0;
-  els.cardArea.classList.remove('hidden');
-  els.doneArea.classList.add('hidden');
-  els.todayTotal.textContent = session.length;
-  els.perDay.value = state.perDay;
-  if (session.length === 0) {
-    showDone(true);
-  } else {
-    showCard();
+    return _dbPromise;
   }
-}
 
-function showCard() {
-  const w = session[sessionIndex];
-  if (!w) {
-    showDone(false);
-    return;
+  async function putRecording(id, blob, mimeType) {
+    const db = await openRecDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).put({ id, blob, mimeType, createdAt: Date.now() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
   }
-  els.todayCount.textContent = sessionIndex;
-  els.todayBar.style.width = (sessionIndex / session.length * 100) + '%';
-  const topic = TOPICS_BY_ID[w.topic];
-  els.cardTopic.textContent = topic ? (topic.emoji + ' ' + topic.name_vi) : '';
-  els.cardWord.textContent = w.word;
-  els.cardIpa.textContent = w.ipa || '';
-  els.cardPos.textContent = w.pos || '';
-  els.cardEveryday.textContent = w.meaning_everyday_vi || '—';
-  els.cardAi.textContent = w.meaning_ai_vi || '—';
-  els.cardExampleEn.textContent = w.example_en || '';
-  els.cardExampleVi.textContent = w.example_vi || '';
-  els.cardTip.textContent = w.tip_vi || '';
 
-  els.flashcard.classList.remove('flipped');
-  els.rateButtons.classList.add('hidden');
-}
-
-function flipCard() {
-  if (els.flashcard.classList.contains('flipped')) return;
-  els.flashcard.classList.add('flipped');
-  els.rateButtons.classList.remove('hidden');
-  const w = session[sessionIndex];
-  if (w) speak(w.word);
-}
-
-function showDone(empty) {
-  els.cardArea.classList.add('hidden');
-  els.doneArea.classList.remove('hidden');
-  els.todayBar.style.width = '100%';
-  if (empty) {
-    els.doneStat.textContent = 'Không có từ nào cần ôn hôm nay. Quay lại sau nhé!';
-  } else {
-    els.doneStat.textContent = `Đã học ${session.length} từ. Chuỗi: ${state.streak} ngày 🔥`;
+  async function getRecording(id) {
+    const db = await openRecDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readonly");
+      const req = tx.objectStore(DB_STORE).get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
   }
-}
 
-els.btnFlip.addEventListener('click', (e) => { e.stopPropagation(); flipCard(); });
-els.flashcard.addEventListener('click', flipCard);
-els.btnSpeak.addEventListener('click', (e) => {
-  e.stopPropagation();
-  const w = session[sessionIndex];
-  if (w) speak(w.word);
-});
+  function recordingId(day, idx, slot) {
+    return `${day}-${idx}-${slot}`;
+  }
 
-document.querySelectorAll('.btn-rate').forEach(btn => {
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const rate = btn.dataset.rate;
-    const w = session[sessionIndex];
-    if (!w) return;
-    rateWord(w.id, rate);
-    sessionIndex++;
-    if (sessionIndex >= session.length) {
-      showDone(false);
-    } else {
-      showCard();
+  // ---------- MediaRecorder ----------
+  let activeRecorder = null;
+  let sharedStream = null;
+
+  async function getMicStream() {
+    if (sharedStream && sharedStream.getTracks().some((t) => t.readyState === "live")) {
+      return sharedStream;
     }
-  });
-});
-
-els.perDay.addEventListener('change', () => {
-  const val = parseInt(els.perDay.value, 10);
-  if (isNaN(val) || val < 3) {
-    els.perDay.value = state.perDay;
-    return;
+    sharedStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return sharedStream;
   }
-  state.perDay = Math.min(30, val);
-  els.perDay.value = state.perDay;
-  saveState();
-  renderToday();
-});
 
-/* ------------------ Topics view ------------------ */
-function statusOfWord(wid) {
-  const p = state.words[wid];
-  if (!p) return 'new';
-  if (p.mastered) return 'mastered';
-  return 'learning';
-}
-
-function statusLabel(s) {
-  return s === 'new' ? 'Chưa học' : s === 'mastered' ? 'Đã thuộc' : 'Đang học';
-}
-
-function renderTopicsGrid() {
-  els.topicDetail.classList.add('hidden');
-  els.wordDetail.classList.add('hidden');
-  els.topicGrid.classList.remove('hidden');
-  els.topicGrid.innerHTML = '';
-  TOPICS.forEach(t => {
-    const wordsInTopic = WORDS.filter(w => w.topic === t.id);
-    const mastered = wordsInTopic.filter(w => statusOfWord(w.id) === 'mastered').length;
-    const total = wordsInTopic.length;
-    const pct = total ? (mastered / total * 100) : 0;
-    const card = document.createElement('div');
-    card.className = 'topic-card';
-    card.innerHTML = `
-      <div class="topic-emoji">${t.emoji || '📘'}</div>
-      <div class="topic-name">${t.name_vi}</div>
-      <div class="topic-count">${mastered}/${total} thuộc</div>
-      <div class="topic-mini-bar"><div class="topic-mini-fill" style="width:${pct}%"></div></div>
-    `;
-    card.addEventListener('click', () => openTopicDetail(t));
-    els.topicGrid.appendChild(card);
-  });
-}
-
-function openTopicDetail(topic) {
-  els.topicGrid.classList.add('hidden');
-  els.wordDetail.classList.add('hidden');
-  els.topicDetail.classList.remove('hidden');
-  els.topicDetailTitle.textContent = `${topic.emoji} ${topic.name_vi}`;
-  els.topicWordList.innerHTML = '';
-  WORDS.filter(w => w.topic === topic.id).forEach(w => {
-    const status = statusOfWord(w.id);
-    const item = document.createElement('div');
-    item.className = 'word-list-item';
-    item.innerHTML = `
-      <div>
-        <span class="word-list-name">${w.word}</span>
-        <span class="word-list-ipa">${w.ipa || ''}</span>
-      </div>
-      <span class="word-list-badge ${status}">${statusLabel(status)}</span>
-    `;
-    item.addEventListener('click', () => openWordDetail(w, topic));
-    els.topicWordList.appendChild(item);
-  });
-}
-
-els.btnBackTopics.addEventListener('click', renderTopicsGrid);
-
-function openWordDetail(w, topic) {
-  els.topicDetail.classList.add('hidden');
-  els.topicGrid.classList.add('hidden');
-  els.wordDetail.classList.remove('hidden');
-  els.wordDetailContent.innerHTML = `
-    <div class="word-detail-card">
-      <div class="word-topic">${topic.emoji} ${topic.name_vi}</div>
-      <div class="word-detail-word">${w.word}</div>
-      <div class="word-detail-ipa">${w.ipa || ''}</div>
-      <div class="word-detail-pos">${w.pos || ''}</div>
-      <div class="word-detail-speak">
-        <button class="btn-speak" id="detailSpeak" aria-label="Phát âm">🔊</button>
-      </div>
-      <div class="back-section">
-        <div class="back-label">Nghĩa thường ngày</div>
-        <div class="back-text">${w.meaning_everyday_vi || '—'}</div>
-      </div>
-      <div class="back-section back-section-ai">
-        <div class="back-label">Nghĩa trong AI 🤖</div>
-        <div class="back-text">${w.meaning_ai_vi || '—'}</div>
-      </div>
-      <div class="back-section">
-        <div class="back-label">Ví dụ</div>
-        <div class="back-text back-example">${w.example_en || ''}</div>
-        <div class="back-text back-example-vi">${w.example_vi || ''}</div>
-      </div>
-      <div class="back-section back-tip">
-        <div class="back-label">💡 Mẹo</div>
-        <div class="back-text">${w.tip_vi || ''}</div>
-      </div>
-    </div>
-  `;
-  const btn = $('detailSpeak');
-  if (btn) btn.addEventListener('click', () => speak(w.word));
-}
-
-els.btnBackWordList.addEventListener('click', () => {
-  // back to the topic the word belongs to
-  const topicTitle = els.topicDetailTitle.textContent;
-  const topic = TOPICS.find(t => topicTitle.includes(t.name_vi));
-  if (topic) openTopicDetail(topic);
-  else renderTopicsGrid();
-});
-
-/* ------------------ Progress view ------------------ */
-function renderProgress() {
-  const learned = Object.keys(state.words).length;
-  const mastered = Object.values(state.words).filter(w => w.mastered).length;
-  els.statLearned.textContent = learned;
-  els.statMastered.textContent = mastered;
-  els.statStreak.textContent = state.streak || 0;
-  els.statTotal.textContent = WORDS.length;
-
-  els.topicProgressList.innerHTML = '<h3 style="margin-bottom:12px">Tiến độ theo chủ đề</h3>';
-  TOPICS.forEach(t => {
-    const wordsInTopic = WORDS.filter(w => w.topic === t.id);
-    const masteredInTopic = wordsInTopic.filter(w => state.words[w.id]?.mastered).length;
-    const total = wordsInTopic.length;
-    const pct = total ? (masteredInTopic / total * 100) : 0;
-    const row = document.createElement('div');
-    row.className = 'topic-progress-row';
-    row.innerHTML = `
-      <div class="topic-progress-name">${t.emoji} ${t.name_vi}</div>
-      <div class="topic-progress-bar"><div class="topic-progress-fill" style="width:${pct}%"></div></div>
-      <div class="topic-progress-text">${masteredInTopic}/${total}</div>
-    `;
-    els.topicProgressList.appendChild(row);
-  });
-}
-
-els.btnReset.addEventListener('click', () => {
-  if (!confirm('Xóa hết tiến độ học? Hành động này không thể hoàn tác.')) return;
-  state = defaultState();
-  saveState();
-  renderProgress();
-  renderToday();
-});
-
-/* ------------------ Init ------------------ */
-function init() {
-  if (!DATA || !WORDS || WORDS.length === 0) {
-    document.body.innerHTML = '<p style="padding:40px;text-align:center">⚠️ Không load được dữ liệu từ vựng. Kiểm tra file vocabulary.js.</p>';
-    return;
+  function setRecButtonState(slot, recording) {
+    document.querySelectorAll(`.rec-btn[data-slot="${slot}"]`).forEach((btn) => {
+      btn.classList.toggle("is-recording", recording);
+      const mic = btn.querySelector(".rec-icon-mic");
+      const stop = btn.querySelector(".rec-icon-stop");
+      if (mic) mic.classList.toggle("hidden", recording);
+      if (stop) stop.classList.toggle("hidden", !recording);
+      btn.title = recording ? "Dừng thu" : "Thu âm giọng bạn";
+    });
   }
-  renderToday();
-}
 
-init();
+  function setPlayButtonVisible(slot, visible) {
+    document.querySelectorAll(`.play-rec-btn[data-slot="${slot}"]`).forEach((btn) => {
+      btn.classList.toggle("hidden", !visible);
+    });
+  }
+
+  async function refreshRecButtons() {
+    const day = state.currentDay;
+    const idx = state.currentCardIndex;
+    for (const slot of ["word"]) {
+      try {
+        const rec = await getRecording(recordingId(day, idx, slot));
+        setPlayButtonVisible(slot, !!rec);
+      } catch {
+        setPlayButtonVisible(slot, false);
+      }
+    }
+  }
+
+  function pickRecorderMime() {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+    for (const c of candidates) {
+      if (MediaRecorder.isTypeSupported(c)) return c;
+    }
+    return "";
+  }
+
+  async function startRecording(slot) {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      alert("Trình duyệt không hỗ trợ thu âm.");
+      return;
+    }
+    if (activeRecorder) {
+      await stopRecording();
+    }
+    let stream;
+    try {
+      stream = await getMicStream();
+    } catch (err) {
+      alert("Cần cấp quyền truy cập micro để thu âm.");
+      return;
+    }
+    const mimeType = pickRecorderMime();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const day = state.currentDay;
+    const idx = state.currentCardIndex;
+    const savedPromise = new Promise((resolve) => {
+      recorder.onstop = async () => {
+        try {
+          const type = recorder.mimeType || "audio/webm";
+          const blob = new Blob(chunks, { type });
+          await putRecording(recordingId(day, idx, slot), blob, type);
+        } catch (err) {
+          console.error("Lưu bản thu thất bại:", err);
+        } finally {
+          if (day === state.currentDay && idx === state.currentCardIndex) {
+            setPlayButtonVisible(slot, true);
+          }
+          resolve();
+        }
+      };
+    });
+    activeRecorder = { recorder, slot, chunks, stream, day, idx, savedPromise };
+    setRecButtonState(slot, true);
+    recorder.start();
+  }
+
+  async function stopRecording() {
+    if (!activeRecorder) return;
+    const { recorder, slot, savedPromise } = activeRecorder;
+    activeRecorder = null;
+    setRecButtonState(slot, false);
+    if (recorder.state !== "inactive") {
+      try { recorder.stop(); } catch {}
+    }
+    await savedPromise;
+  }
+
+  // ---------- Playback (bản thu của user) ----------
+  let activePlayback = null;
+
+  function setPlayBtnState(slot, isPlaying) {
+    document.querySelectorAll(`.play-rec-btn[data-slot="${slot}"]`).forEach((btn) => {
+      btn.classList.toggle("is-playing", isPlaying);
+      const p = btn.querySelector(".play-icon-play");
+      const ps = btn.querySelector(".play-icon-pause");
+      if (p) p.classList.toggle("hidden", isPlaying);
+      if (ps) ps.classList.toggle("hidden", !isPlaying);
+      btn.title = isPlaying ? "Tạm dừng" : "Nghe lại bản thu";
+    });
+  }
+
+  function stopPlayback() {
+    if (!activePlayback) return;
+    const { audio, slot, url } = activePlayback;
+    activePlayback = null;
+    try { audio.pause(); } catch {}
+    try { URL.revokeObjectURL(url); } catch {}
+    setPlayBtnState(slot, false);
+  }
+
+  async function playRecording(slot) {
+    if (activePlayback && activePlayback.slot === slot) {
+      const a = activePlayback.audio;
+      if (a.paused) {
+        try {
+          await a.play();
+          setPlayBtnState(slot, true);
+        } catch {
+          stopPlayback();
+        }
+      } else {
+        a.pause();
+        setPlayBtnState(slot, false);
+      }
+      return;
+    }
+    if (activePlayback) stopPlayback();
+
+    const id = recordingId(state.currentDay, state.currentCardIndex, slot);
+    let rec;
+    try { rec = await getRecording(id); } catch { rec = null; }
+    if (!rec || !rec.blob) return;
+    const url = URL.createObjectURL(rec.blob);
+    const audio = new Audio(url);
+    activePlayback = { audio, slot, url };
+    setPlayBtnState(slot, true);
+    const cleanup = () => { if (activePlayback && activePlayback.audio === audio) stopPlayback(); };
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+    try {
+      await audio.play();
+    } catch {
+      cleanup();
+    }
+  }
+
+  // ---------- Renderers ----------
+  function renderHeader() {
+    let easy = 0, medium = 0, hard = 0;
+    for (const v of Object.values(state.ratings)) {
+      if (v === "easy") easy++;
+      else if (v === "medium") medium++;
+      else if (v === "hard") hard++;
+    }
+    els.statEasy.textContent = easy;
+    els.statMedium.textContent = medium;
+    els.statHard.textContent = hard;
+  }
+
+  function renderDayInfo() {
+    const d = currentDayData();
+    els.dayLabel.textContent = `${d.level || ""} · Chủ đề`;
+    els.dayThemeEn.textContent = d.themeEn || "—";
+    els.dayThemeVi.textContent = d.theme || "Chưa cập nhật";
+    els.topicName.textContent = d.theme || "—";
+    const total = d.cards.length;
+    const shown = total ? Math.min(state.currentCardIndex + 1, total) : 0;
+    els.cardProgress.textContent = `${shown} / ${total || 0}`;
+  }
+
+  function renderCard() {
+    // Reset flip when changing card
+    els.flashcard.classList.remove("is-flipped");
+
+    const card = currentCard();
+    if (!card) {
+      els.flashcard.style.visibility = "hidden";
+      els.emptyState.classList.remove("hidden");
+      return;
+    }
+    els.flashcard.style.visibility = "visible";
+    els.emptyState.classList.add("hidden");
+
+    // Front
+    els.frontWord.textContent = card.word;
+    els.frontIpa.textContent = card.ipa || "";
+
+    // Back
+    els.backEmoji.textContent = card.emoji || "";
+    els.backMeaning.textContent = card.meaning;
+
+    // add subtle fade-in
+    const inner = els.flashcard.querySelector(".card-inner");
+    inner.classList.remove("fade-in");
+    void inner.offsetWidth;
+    inner.classList.add("fade-in");
+
+    setPlayButtonVisible("word", false);
+    refreshRecButtons();
+  }
+
+  function renderAll() {
+    renderHeader();
+    renderDayInfo();
+    renderCard();
+  }
+
+  // ---------- Actions ----------
+  async function leaveCurrentCard() {
+    stopPlayback();
+    if (activeRecorder) await stopRecording();
+  }
+
+  function flipCard() {
+    if (!currentCard()) return;
+    els.flashcard.classList.toggle("is-flipped");
+  }
+  async function goPrev() {
+    if (state.currentCardIndex > 0) {
+      await leaveCurrentCard();
+      state.currentCardIndex--;
+      saveState();
+      renderDayInfo();
+      renderCard();
+    }
+  }
+  async function goNext() {
+    const d = currentDayData();
+    if (!d.cards.length) return;
+    if (state.currentCardIndex < d.cards.length - 1) {
+      await leaveCurrentCard();
+      state.currentCardIndex++;
+      saveState();
+      renderDayInfo();
+      renderCard();
+    }
+  }
+  function rateCard(level) {
+    if (!currentCard()) return;
+    const key = `${state.currentDay}-${state.currentCardIndex}`;
+    state.ratings[key] = level;
+    saveState();
+    renderHeader();
+    // small delay so flip animation does not collide
+    setTimeout(goNext, 180);
+  }
+  async function setDay(n) {
+    if (n < 1 || n > data.days.length) return;
+    await leaveCurrentCard();
+    state.currentDay = n;
+    state.currentCardIndex = 0;
+    saveState();
+    renderAll();
+  }
+  function dayPrevAction() { setDay(state.currentDay - 1); }
+  function dayNextAction() { setDay(state.currentDay + 1); }
+
+  // ---------- Modal ----------
+  function buildPickerGrid() {
+    // Nhóm chủ đề theo level ("Lớp 1" …), giữ thứ tự; mỗi ô là một nút tên chủ đề.
+    const groups = [];
+    data.days.forEach((d, idx) => {
+      const key = d.level || "—";
+      let g = groups.find((x) => x.level === key);
+      if (!g) { g = { level: key, items: [] }; groups.push(g); }
+      g.items.push({ d, flat: idx + 1 });
+    });
+    els.pickerGrid.innerHTML = groups.map((g) => {
+      const cells = g.items.map(({ d, flat }) => {
+        const isCurrent = flat === state.currentDay;
+        const isEmpty = !d.cards.length;
+        return `<button class="topic-cell ${isCurrent ? "is-current" : ""} ${isEmpty ? "is-empty" : ""}" data-day="${flat}">
+            <span class="font-medium">${escapeHtml(d.theme || "")}</span>
+            <span class="topic-en">${escapeHtml(d.themeEn || "")}</span>
+          </button>`;
+      });
+      return `
+        <div>
+          <div class="flex items-baseline justify-between mb-3">
+            <div class="text-brand-redSoft text-xs tracking-[0.18em] uppercase font-semibold">${escapeHtml(g.level)}</div>
+            <div class="text-xs text-dim">${g.items.length} chủ đề</div>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">${cells.join("")}</div>
+        </div>`;
+    }).join("");
+
+    els.pickerGrid.querySelectorAll(".topic-cell").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const n = Number(btn.dataset.day);
+        setDay(n);
+        closePicker();
+      });
+    });
+  }
+  function openPicker() {
+    buildPickerGrid();
+    els.picker.classList.remove("modal-hidden");
+  }
+  function closePicker() {
+    els.picker.classList.add("modal-hidden");
+  }
+
+  // ---------- Bindings ----------
+  function bindEvents() {
+    // card flip on click (front + back faces)
+    els.flashcard.querySelectorAll(".card-face").forEach((face) => {
+      face.addEventListener("click", (e) => {
+        if (e.target.closest(".speaker, .rec-btn, .play-rec-btn")) return;
+        flipCard();
+      });
+    });
+
+    // speakers
+    document.querySelectorAll(".speaker").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const targetId = btn.dataset.target;
+        const el = document.getElementById(targetId);
+        if (el) speak(el.textContent.trim());
+      });
+    });
+
+    // record buttons
+    document.querySelectorAll(".rec-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const slot = btn.dataset.slot;
+        if (activeRecorder && activeRecorder.slot === slot) stopRecording();
+        else startRecording(slot);
+      });
+    });
+
+    // play recording buttons
+    document.querySelectorAll(".play-rec-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        playRecording(btn.dataset.slot);
+      });
+    });
+
+    // card nav
+    els.cardPrev.addEventListener("click", goPrev);
+    els.cardNext.addEventListener("click", goNext);
+
+    // topic nav
+    els.dayPrev.addEventListener("click", dayPrevAction);
+    els.dayNext.addEventListener("click", dayNextAction);
+
+    // open / close modal
+    els.openPicker.addEventListener("click", openPicker);
+    els.pickerClose.addEventListener("click", closePicker);
+    els.pickerOverlay.addEventListener("click", closePicker);
+
+    // rating
+    document.querySelectorAll(".rate-btn").forEach((btn) => {
+      btn.addEventListener("click", () => rateCard(btn.dataset.level));
+    });
+
+    // keyboard
+    document.addEventListener("keydown", (e) => {
+      // Don't intercept when typing
+      if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+
+      if (!els.picker.classList.contains("modal-hidden")) {
+        if (e.key === "Escape") { e.preventDefault(); closePicker(); }
+        return;
+      }
+
+      switch (e.key) {
+        case " ":
+        case "Spacebar":
+          e.preventDefault();
+          flipCard();
+          break;
+        case "ArrowLeft":
+          e.preventDefault(); goPrev(); break;
+        case "ArrowRight":
+          e.preventDefault(); goNext(); break;
+        case "p":
+        case "P":
+          e.preventDefault(); dayPrevAction(); break;
+        case "n":
+        case "N":
+          e.preventDefault(); dayNextAction(); break;
+        case "1":
+          e.preventDefault(); rateCard("hard"); break;
+        case "2":
+          e.preventDefault(); rateCard("medium"); break;
+        case "3":
+          e.preventDefault(); rateCard("easy"); break;
+        case "Escape":
+          // no-op when no modal
+          break;
+      }
+    });
+  }
+
+  // ---------- Init ----------
+  function init() {
+    // clamp state
+    if (state.currentDay < 1 || state.currentDay > data.days.length) state.currentDay = 1;
+    const d = currentDayData();
+    if (!d.cards.length) state.currentCardIndex = 0;
+    else if (state.currentCardIndex >= d.cards.length) state.currentCardIndex = 0;
+
+    bindEvents();
+    renderAll();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
