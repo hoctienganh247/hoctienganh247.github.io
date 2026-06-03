@@ -7,7 +7,8 @@
 
   const defaultState = {
     currentDay: 1,
-    mode: "match", // "match" | "fill" | "choice"
+    mode: "match", // "match" | "fill" | "choice" | "dialogue"
+    showTranslation: false, // hội thoại: hiện/ẩn bản dịch tiếng Việt cho cả bài
   };
 
   function loadState() {
@@ -36,6 +37,7 @@
     match: "Nối từ với hình đúng",
     fill: "Điền chữ còn thiếu",
     choice: "Chọn từ đúng với hình",
+    dialogue: "Luyện hội thoại",
   };
 
   // ---------- DOM ----------
@@ -54,6 +56,8 @@
     exerciseTitle: $("exercise-title"),
     exerciseArea: $("exercise-area"),
     resultBadge: $("result-badge"),
+    actionBar: $("action-bar"),
+    tipBar: $("tip-bar"),
     btnCheck: $("btn-check"),
     btnReset: $("btn-reset"),
     picker: $("picker"),
@@ -96,6 +100,246 @@
     } catch {}
   }
 
+  // Phát 1 câu rồi gọi onDone (dùng cho "phát cả đoạn")
+  function speakThen(text, onDone) {
+    if (!("speechSynthesis" in window) || !text) { onDone && onDone(); return; }
+    try {
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.lang = "en-US";
+      utt.rate = 0.85;
+      utt.pitch = 1;
+      utt.onend = () => onDone && onDone();
+      utt.onerror = () => onDone && onDone();
+      window.speechSynthesis.speak(utt);
+    } catch { onDone && onDone(); }
+  }
+
+  // ---------- Phát cả đoạn hội thoại ----------
+  let playAllActive = false;
+
+  function highlightDlgLine(i) {
+    els.exerciseArea.querySelectorAll(".dlg-row.is-speaking").forEach((r) => r.classList.remove("is-speaking"));
+    if (i == null) return;
+    const row = els.exerciseArea.querySelector(`.dlg-row[data-i="${i}"]`);
+    if (row) {
+      row.classList.add("is-speaking");
+      try { row.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch {}
+    }
+  }
+
+  function updatePlayAllBtn() {
+    const btn = $("dlg-play-all");
+    if (!btn) return;
+    btn.classList.toggle("is-playing", playAllActive);
+    const label = btn.querySelector(".dlg-play-all-label");
+    if (label) label.textContent = playAllActive ? "Dừng" : "Phát cả đoạn";
+  }
+
+  function stopPlayAll() {
+    playAllActive = false;
+    try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch {}
+    highlightDlgLine(null);
+    updatePlayAllBtn();
+  }
+
+  function startPlayAll() {
+    const lines = (gen && gen.lines) || [];
+    if (!lines.length) return;
+    stopPlayback();
+    if (activeRecorder) stopRecording();
+    playAllActive = true;
+    updatePlayAllBtn();
+    let i = 0;
+    const step = () => {
+      if (!playAllActive) return;
+      if (i >= lines.length) { stopPlayAll(); return; }
+      highlightDlgLine(i);
+      speakThen(lines[i].en, () => {
+        if (!playAllActive) return;
+        i++;
+        setTimeout(step, 350); // khoảng nghỉ ngắn giữa các câu
+      });
+    };
+    step();
+  }
+
+  // ---------- IndexedDB (bản thu của học sinh) ----------
+  const DB_NAME = "htt-en-rec-exercises";
+  const DB_VERSION = 1;
+  const DB_STORE = "recordings";
+  let _dbPromise = null;
+
+  function openRecDB() {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve, reject) => {
+      if (!("indexedDB" in window)) { reject(new Error("IndexedDB not supported")); return; }
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(DB_STORE)) {
+          db.createObjectStore(DB_STORE, { keyPath: "id" });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return _dbPromise;
+  }
+  async function putRecording(id, blob, mimeType) {
+    const db = await openRecDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).put({ id, blob, mimeType, createdAt: Date.now() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  async function getRecording(id) {
+    const db = await openRecDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, "readonly");
+      const req = tx.objectStore(DB_STORE).get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  // mỗi câu hội thoại 1 bản thu: id = dlg-<day>-<lineIndex>
+  function dlgRecId(i) { return `dlg-${state.currentDay}-${i}`; }
+
+  // ---------- MediaRecorder ----------
+  let activeRecorder = null;
+  let sharedStream = null;
+
+  async function getMicStream() {
+    if (sharedStream && sharedStream.getTracks().some((t) => t.readyState === "live")) return sharedStream;
+    sharedStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return sharedStream;
+  }
+  function pickRecorderMime() {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+    for (const c of candidates) { if (MediaRecorder.isTypeSupported(c)) return c; }
+    return "";
+  }
+  function setDlgRecState(i, recording) {
+    const btn = els.exerciseArea.querySelector(`.dlg-rec[data-i="${i}"]`);
+    if (!btn) return;
+    btn.classList.toggle("is-recording", recording);
+    const mic = btn.querySelector(".rec-icon-mic");
+    const stop = btn.querySelector(".rec-icon-stop");
+    if (mic) mic.classList.toggle("hidden", recording);
+    if (stop) stop.classList.toggle("hidden", !recording);
+    btn.title = recording ? "Dừng thu" : "Thu âm giọng bạn";
+  }
+  function setDlgPlayVisible(i, visible) {
+    const btn = els.exerciseArea.querySelector(`.dlg-play[data-i="${i}"]`);
+    if (btn) btn.classList.toggle("hidden", !visible);
+  }
+
+  async function startRecording(i) {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      alert("Trình duyệt không hỗ trợ thu âm.");
+      return;
+    }
+    stopPlayAll();
+    stopPlayback();
+    if (activeRecorder) await stopRecording();
+    let stream;
+    try { stream = await getMicStream(); }
+    catch { alert("Cần cấp quyền truy cập micro để thu âm."); return; }
+
+    const mimeType = pickRecorderMime();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const day = state.currentDay;
+    const savedPromise = new Promise((resolve) => {
+      recorder.onstop = async () => {
+        try {
+          const type = recorder.mimeType || "audio/webm";
+          const blob = new Blob(chunks, { type });
+          await putRecording(`dlg-${day}-${i}`, blob, type);
+        } catch (err) {
+          console.error("Lưu bản thu thất bại:", err);
+        } finally {
+          if (day === state.currentDay && state.mode === "dialogue") setDlgPlayVisible(i, true);
+          resolve();
+        }
+      };
+    });
+    activeRecorder = { recorder, i, day, chunks, stream, savedPromise };
+    setDlgRecState(i, true);
+    recorder.start();
+  }
+  async function stopRecording() {
+    if (!activeRecorder) return;
+    const { recorder, i, savedPromise } = activeRecorder;
+    activeRecorder = null;
+    setDlgRecState(i, false);
+    if (recorder.state !== "inactive") { try { recorder.stop(); } catch {} }
+    await savedPromise;
+  }
+
+  // ---------- Phát lại bản thu ----------
+  let activePlayback = null;
+
+  function setDlgPlayState(i, isPlaying) {
+    const btn = els.exerciseArea.querySelector(`.dlg-play[data-i="${i}"]`);
+    if (!btn) return;
+    btn.classList.toggle("is-playing", isPlaying);
+    const p = btn.querySelector(".play-icon-play");
+    const ps = btn.querySelector(".play-icon-pause");
+    if (p) p.classList.toggle("hidden", isPlaying);
+    if (ps) ps.classList.toggle("hidden", !isPlaying);
+    btn.title = isPlaying ? "Tạm dừng" : "Nghe lại bản thu";
+  }
+  function stopPlayback() {
+    if (!activePlayback) return;
+    const { audio, i, url } = activePlayback;
+    activePlayback = null;
+    try { audio.pause(); } catch {}
+    try { URL.revokeObjectURL(url); } catch {}
+    setDlgPlayState(i, false);
+  }
+  async function playRecording(i) {
+    if (activePlayback && activePlayback.i === i) {
+      const a = activePlayback.audio;
+      if (a.paused) { try { await a.play(); setDlgPlayState(i, true); } catch { stopPlayback(); } }
+      else { a.pause(); setDlgPlayState(i, false); }
+      return;
+    }
+    if (activePlayback) stopPlayback();
+    stopPlayAll();
+    let rec;
+    try { rec = await getRecording(dlgRecId(i)); } catch { rec = null; }
+    if (!rec || !rec.blob) return;
+    const url = URL.createObjectURL(rec.blob);
+    const audio = new Audio(url);
+    activePlayback = { audio, i, url };
+    setDlgPlayState(i, true);
+    const cleanup = () => { if (activePlayback && activePlayback.audio === audio) stopPlayback(); };
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+    try { await audio.play(); } catch { cleanup(); }
+  }
+
+  // Hiện nút "nghe lại" cho các câu đã có bản thu
+  async function refreshDlgRecButtons(lineCount) {
+    for (let i = 0; i < lineCount; i++) {
+      try {
+        const rec = await getRecording(dlgRecId(i));
+        setDlgPlayVisible(i, !!rec);
+      } catch { setDlgPlayVisible(i, false); }
+    }
+  }
+
+  // Dừng mọi media của hội thoại (khi đổi chủ đề / mode / render lại)
+  function stopDialogueMedia() {
+    stopPlayAll();
+    stopPlayback();
+    if (activeRecorder) stopRecording();
+  }
+
   // ---------- Exercise generation ----------
   // gen giữ dữ liệu cố định của bài tập hiện tại để render lại không bị xáo trộn.
   let gen = null;
@@ -135,6 +379,12 @@
         };
       });
       gen = { items };
+    } else if (state.mode === "dialogue") {
+      const dlg = (window.dialogues && window.dialogues[state.currentDay - 1]) || null;
+      gen = {
+        lines: (dlg && dlg.lines) || [],
+        vocab: (dlg && dlg.vocab) || "",
+      };
     } else { // choice
       const picked = sample(cards, CHOICE_COUNT);
       const items = picked.map((c) => {
@@ -166,8 +416,20 @@
     els.resultBadge.className = "hidden text-sm font-medium px-3 py-1.5 rounded-lg border";
   }
 
+  // Mode hội thoại không chấm điểm -> ẩn nút Kiểm tra/Làm lại, badge & dòng mẹo chung.
+  function applyModeChrome() {
+    const isDialogue = state.mode === "dialogue";
+    if (els.actionBar) els.actionBar.classList.toggle("hidden", isDialogue);
+    if (els.tipBar) els.tipBar.classList.toggle("hidden", isDialogue);
+    if (isDialogue) resetResult();
+  }
+
   function renderExercise() {
     resetResult();
+    applyModeChrome();
+
+    if (state.mode === "dialogue") { renderDialogue(); return; }
+
     const d = currentDayData();
     if (!d || !d.cards.length) {
       els.exerciseArea.innerHTML =
@@ -356,6 +618,104 @@
     });
   }
 
+  // ----- Mode: Dialogue (luyện đọc, không chấm điểm) -----
+  const ICON = {
+    speaker: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`,
+    rec: `<svg class="rec-icon-mic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg><svg class="rec-icon-stop hidden" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`,
+    play: `<svg class="play-icon-play" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20 6 4"/></svg><svg class="play-icon-pause hidden" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>`,
+    playAll: `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+  };
+
+  function renderDialogue() {
+    stopDialogueMedia();
+    const lines = (gen && gen.lines) || [];
+    if (!lines.length) {
+      els.exerciseArea.innerHTML =
+        `<div class="rounded-2xl bg-card2 border border-line shadow-card flex flex-col items-center justify-center text-center px-6 py-16">
+           <div class="text-5xl text-neutral-700">💬</div>
+           <div class="mt-3 text-neutral-300 font-medium">Chưa có hội thoại cho chủ đề này</div>
+           <div class="mt-1 text-sm text-dim">Bổ sung vào <code class="text-neutral-300">dialogues.js</code>.</div>
+         </div>`;
+      return;
+    }
+
+    const showAll = !!state.showTranslation;
+    const rows = lines.map((ln, i) => {
+      const side = ln.s === "A" ? "dlg-a" : "dlg-b";
+      return `<div class="dlg-row ${side}" data-i="${i}">
+                <div class="dlg-bubble">
+                  <div class="dlg-head">
+                    <span class="dlg-speaker">${escapeHtml(ln.s)}</span>
+                    <div class="dlg-tools">
+                      <button class="dlg-tool dlg-speak" data-i="${i}" title="Nghe phát âm">${ICON.speaker}</button>
+                      <button class="dlg-tool dlg-rec" data-i="${i}" title="Thu âm giọng bạn">${ICON.rec}</button>
+                      <button class="dlg-tool dlg-play hidden" data-i="${i}" title="Nghe lại bản thu">${ICON.play}</button>
+                    </div>
+                  </div>
+                  <button class="dlg-en" data-i="${i}" title="Bấm để hiện/ẩn bản dịch">${escapeHtml(ln.en)}</button>
+                  <div class="dlg-vi">${escapeHtml(ln.vi)}</div>
+                </div>
+              </div>`;
+    }).join("");
+
+    els.exerciseArea.innerHTML =
+      `<div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
+         <button id="dlg-play-all" class="flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-red text-white hover:bg-brand-redSoft transition text-sm font-medium">
+           ${ICON.playAll}<span class="dlg-play-all-label">Phát cả đoạn</span>
+         </button>
+         <button id="dlg-toggle" class="px-4 py-2 rounded-xl bg-card border border-line hover:bg-white/5 transition text-sm font-medium ${showAll ? "text-brand-redSoft" : ""}">
+           ${showAll ? "Ẩn bản dịch" : "Hiện bản dịch"}
+         </button>
+       </div>
+       <p class="text-xs text-dim mb-4">Bấm 🔊 nghe từng câu · 🎤 thu âm giọng bạn rồi nghe lại · bấm vào câu để hiện/ẩn bản dịch.</p>
+       <div id="dlg-wrap" class="dlg-wrap ${showAll ? "show-all" : ""} flex flex-col gap-3">${rows}</div>
+       ${gen.vocab ? `<div class="mt-6 pt-4 border-t border-line text-sm"><span class="text-dim">Từ vựng: </span><span class="text-neutral-200">${escapeHtml(gen.vocab)}</span></div>` : ""}`;
+
+    $("dlg-play-all").addEventListener("click", () => {
+      if (playAllActive) stopPlayAll();
+      else startPlayAll();
+    });
+
+    $("dlg-toggle").addEventListener("click", () => {
+      state.showTranslation = !state.showTranslation;
+      saveState();
+      // chỉ bật/tắt class, không render lại để không mất bản thu / trạng thái
+      const wrap = $("dlg-wrap");
+      if (wrap) wrap.classList.toggle("show-all", state.showTranslation);
+      const tg = $("dlg-toggle");
+      if (tg) {
+        tg.textContent = state.showTranslation ? "Ẩn bản dịch" : "Hiện bản dịch";
+        tg.classList.toggle("text-brand-redSoft", state.showTranslation);
+      }
+    });
+
+    els.exerciseArea.querySelectorAll(".dlg-en").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const row = btn.closest(".dlg-row");
+        if (row) row.classList.toggle("is-open");
+      });
+    });
+    els.exerciseArea.querySelectorAll(".dlg-speak").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        stopPlayAll();
+        speak(lines[Number(btn.dataset.i)].en);
+      });
+    });
+    els.exerciseArea.querySelectorAll(".dlg-rec").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = Number(btn.dataset.i);
+        if (activeRecorder && activeRecorder.i === i) stopRecording();
+        else startRecording(i);
+      });
+    });
+    els.exerciseArea.querySelectorAll(".dlg-play").forEach((btn) => {
+      btn.addEventListener("click", () => playRecording(Number(btn.dataset.i)));
+    });
+
+    updatePlayAllBtn();
+    refreshDlgRecButtons(lines.length);
+  }
+
   // ---------- Check / Score ----------
   function showResult(correct, total) {
     els.statCorrect.textContent = correct;
@@ -369,6 +729,7 @@
   }
 
   function checkAnswers() {
+    if (state.mode === "dialogue") return; // hội thoại không chấm điểm
     if (!gen || !gen.items || !gen.items.length) return;
     checked = true;
     let correct = 0;
@@ -419,6 +780,7 @@
   }
 
   function resetExercise() {
+    stopDialogueMedia();
     generateExercise();
     renderExercise();
   }

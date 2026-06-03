@@ -112,6 +112,7 @@
         <button class="mode-tab px-4 py-2.5 hover:bg-white/5 transition" data-mode="match">Nối từ – hình</button>
         <button class="mode-tab px-4 py-2.5 border-l border-line hover:bg-white/5 transition" data-mode="fill">Điền chữ thiếu</button>
         <button class="mode-tab px-4 py-2.5 border-l border-line hover:bg-white/5 transition" data-mode="choice">Trắc nghiệm</button>
+        <button class="mode-tab px-4 py-2.5 border-l border-line hover:bg-white/5 transition" data-mode="dialogue">Hội thoại</button>
       </div>
     </div>
 
@@ -129,7 +130,7 @@
       <div id="exercise-area" class="relative"></div>
 
       <!-- Action bar -->
-      <div class="mt-8 flex items-center justify-center gap-3">
+      <div id="action-bar" class="mt-8 flex items-center justify-center gap-3">
         <button id="btn-check" class="px-6 py-3 rounded-xl bg-brand-red text-white font-medium hover:bg-brand-redSoft transition">
           Kiểm tra
         </button>
@@ -138,7 +139,7 @@
         </button>
       </div>
 
-      <div class="mt-5 mb-10 text-center text-xs text-dim">
+      <div id="tip-bar" class="mt-5 mb-10 text-center text-xs text-dim">
         Mẹo: bấm vào từ tiếng Anh để nghe phát âm.
       </div>
     </div>
@@ -164,6 +165,7 @@
   </div>
 
   <script src="data.js"></script>
+  <script src="dialogues.js"></script>
   <script src="exercises.js"></script>
 </body>
 </html>
