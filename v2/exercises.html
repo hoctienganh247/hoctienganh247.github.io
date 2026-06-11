@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Học Tiếng Anh — Bài tập ôn luyện theo chủ đề</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: "#0a0a0a",
+            card: "#161616",
+            card2: "#1c1c1c",
+            line: "rgba(255,255,255,0.08)",
+            brand: { red: "#2563eb", redSoft: "#3b82f6" },
+            ok: "#22c55e",
+            warn: "#eab308",
+            bad: "#ef4444",
+            muted: "#9ca3af",
+            dim: "#6b7280",
+          },
+          boxShadow: {
+            card: "0 10px 40px -10px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04)",
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="bg-ink text-neutral-100 min-h-screen antialiased">
+
+  <!-- ===== Header ===== -->
+  <header class="px-4 sm:px-8 pt-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-lg bg-brand-red flex items-center justify-center text-white text-lg font-bold leading-none shadow-card">
+          ABC
+        </div>
+        <div class="leading-tight">
+          <div class="font-semibold">Bài tập ôn luyện</div>
+          <div class="text-xs text-dim">Học Tiếng Anh · 21 chủ đề</div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-4 sm:gap-5 text-sm flex-wrap">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-ok"></span>
+          <span class="text-dim">Đúng</span>
+          <span class="font-semibold tabular-nums" id="stat-correct">0</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-bad"></span>
+          <span class="text-dim">Sai</span>
+          <span class="font-semibold tabular-nums" id="stat-wrong">0</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-dim"></span>
+          <span class="text-dim">Tổng</span>
+          <span class="font-semibold tabular-nums" id="stat-total">0</span>
+        </div>
+        <a href="index.html" class="flex items-center gap-2 px-3 py-2 rounded-xl bg-card border border-line hover:bg-white/5 transition text-sm" title="Quay lại Flashcard">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+          Flashcard
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== Sub-header / Topic + mode selector ===== -->
+  <section class="px-4 sm:px-8 mt-5">
+    <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 sm:gap-6">
+
+      <!-- Topic selector -->
+      <div class="flex items-center gap-3 flex-wrap">
+        <div class="flex items-stretch rounded-xl bg-card border border-line overflow-hidden">
+          <button id="day-prev" class="px-3 hover:bg-white/5 transition text-neutral-400" title="Chủ đề trước (P)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <div class="px-5 py-2.5 text-center leading-tight border-l border-r border-line whitespace-nowrap">
+            <div class="text-[10px] tracking-[0.18em] text-dim uppercase" id="day-label">Chủ đề</div>
+            <div class="text-sm font-medium">
+              <span class="text-brand-redSoft font-semibold" id="day-theme-en">Colors</span>
+              <span class="text-neutral-300"> · </span>
+              <span id="day-theme-vi">Màu sắc</span>
+            </div>
+          </div>
+          <button id="day-next" class="px-3 hover:bg-white/5 transition text-neutral-400" title="Chủ đề kế (N)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+        </div>
+
+        <button id="open-picker" class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-card border border-line hover:bg-white/5 transition text-sm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          Tất cả 21 chủ đề
+        </button>
+      </div>
+
+      <!-- Mode selector -->
+      <div class="flex items-stretch rounded-xl bg-card border border-line overflow-hidden text-sm" id="mode-tabs">
+        <button class="mode-tab px-4 py-2.5 hover:bg-white/5 transition" data-mode="match">Nối từ – hình</button>
+        <button class="mode-tab px-4 py-2.5 border-l border-line hover:bg-white/5 transition" data-mode="fill">Điền chữ thiếu</button>
+        <button class="mode-tab px-4 py-2.5 border-l border-line hover:bg-white/5 transition" data-mode="choice">Trắc nghiệm</button>
+        <button class="mode-tab px-4 py-2.5 border-l border-line hover:bg-white/5 transition" data-mode="dialogue">Hội thoại</button>
+      </div>
+    </div>
+
+    <div class="mt-4 h-px bg-line"></div>
+  </section>
+
+  <!-- ===== Main exercise area ===== -->
+  <main class="px-4 sm:px-8 mt-6 sm:mt-8">
+    <div class="max-w-3xl mx-auto">
+      <div class="flex items-center justify-between gap-3 mb-4">
+        <h1 id="exercise-title" class="text-lg sm:text-xl font-semibold text-brand-redSoft">Nối từ với hình đúng</h1>
+        <div id="result-badge" class="hidden text-sm font-medium px-3 py-1.5 rounded-lg border"></div>
+      </div>
+
+      <div id="exercise-area" class="relative"></div>
+
+      <!-- Action bar -->
+      <div id="action-bar" class="mt-8 flex items-center justify-center gap-3">
+        <button id="btn-check" class="px-6 py-3 rounded-xl bg-brand-red text-white font-medium hover:bg-brand-redSoft transition">
+          Kiểm tra
+        </button>
+        <button id="btn-reset" class="px-6 py-3 rounded-xl bg-card border border-line hover:bg-white/5 transition">
+          Làm lại / Xáo trộn
+        </button>
+      </div>
+
+      <div id="tip-bar" class="mt-5 mb-10 text-center text-xs text-dim">
+        Mẹo: bấm vào từ tiếng Anh để nghe phát âm.
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== Topic picker modal ===== -->
+  <div id="picker" class="modal-hidden fixed inset-0 z-50">
+    <div class="modal-overlay absolute inset-0 bg-black/70 backdrop-blur-sm" id="picker-overlay"></div>
+    <div class="absolute inset-0 flex items-start justify-center p-6 overflow-y-auto">
+      <div class="modal-panel relative mt-10 w-full max-w-3xl bg-card2 border border-line rounded-2xl shadow-card p-5 sm:p-8">
+        <button id="picker-close" class="absolute top-5 right-5 w-9 h-9 rounded-lg border border-line hover:bg-white/5 transition flex items-center justify-center text-neutral-300">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+
+        <div class="leading-tight">
+          <div class="text-lg font-semibold">Chọn chủ đề</div>
+          <div class="text-sm text-dim">21 chủ đề</div>
+        </div>
+
+        <div id="picker-grid" class="mt-6 space-y-7"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="dialogues.js"></script>
+  <script src="exercises.js"></script>
+</body>
+</html>
